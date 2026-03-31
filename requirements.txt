@@ -1,0 +1,5 @@
+aiogram==2.25.1
+aiohttp==3.9.1
+python-dotenv==1.0.0
+rlottie-python==0.1.2
+FFmpeg
