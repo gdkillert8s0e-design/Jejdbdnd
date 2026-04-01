@@ -13,8 +13,8 @@ BOT_TOKEN = "8546598726:AAG2SfBlXi96vtXBGPEQeGNhpXZvyQ-eZj4"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-BOT_VERSION = "v4.0"
-BOT_UPDATE_TEXT = "✅ Обновление: новая запись GIF через Pillow (совместимость с Telegram) + ограничение кадров до 100 для надёжности."
+BOT_VERSION = "v5.0"
+BOT_UPDATE_TEXT = "✅ Обновление: отправка результата как документа (Telegram не принимает созданные GIF как анимацию)."
 
 TEMP_DIR = tempfile.mkdtemp()
 OUTPUT_WIDTH = 1920
@@ -59,7 +59,6 @@ def resize_gif(input_path: str, output_path: str) -> bool:
         if not frames:
             return False
 
-        # Сохраняем через Pillow
         frames[0].save(
             output_path,
             save_all=True,
@@ -85,7 +84,7 @@ async def run_with_timeout(func, *args, timeout=TIMEOUT):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer(f"🤖 Бот версии {BOT_VERSION}\n\n{BOT_UPDATE_TEXT}\n\nОтправь GIF — я сделаю из него широкоформатный GIF 1920×816 с чёрными полями.\nОбрабатываются GIF до 100 кадров и до 5 МБ. Если больше — верну исходный.")
+    await message.answer(f"🤖 Бот версии {BOT_VERSION}\n\n{BOT_UPDATE_TEXT}\n\nОтправь GIF — я сделаю из него широкоформатный GIF 1920×816 с чёрными полями.\nОбрабатываются GIF до 100 кадров и до 5 МБ. Если больше — верну исходный.\nРезультат приходит как документ (Telegram не принимает созданные GIF как анимацию).")
 
 @dp.message(lambda msg: msg.document and msg.document.mime_type == "image/gif")
 async def handle_gif_document(message: types.Message):
@@ -99,22 +98,22 @@ async def handle_gif_document(message: types.Message):
     frames, size_mb = get_gif_info(input_path)
     if frames is None:
         await message.answer("Не удалось прочитать GIF. Отправляю исходный.")
-        original = FSInputFile(input_path, filename="animation.gif")
-        await message.answer_animation(original)
+        original = FSInputFile(input_path, filename="original.gif")
+        await message.answer_document(original, caption="Исходный GIF")
         os.remove(input_path)
         return
 
     if frames > MAX_FRAMES:
         await message.answer(f"GIF содержит {frames} кадров (максимум {MAX_FRAMES}). Отправляю исходный.")
-        original = FSInputFile(input_path, filename="animation.gif")
-        await message.answer_animation(original)
+        original = FSInputFile(input_path, filename="original.gif")
+        await message.answer_document(original, caption="Исходный GIF")
         os.remove(input_path)
         return
 
     if size_mb > MAX_SIZE_MB:
         await message.answer(f"GIF слишком большой ({size_mb:.1f} МБ, максимум {MAX_SIZE_MB}). Отправляю исходный.")
-        original = FSInputFile(input_path, filename="animation.gif")
-        await message.answer_animation(original)
+        original = FSInputFile(input_path, filename="original.gif")
+        await message.answer_document(original, caption="Исходный GIF")
         os.remove(input_path)
         return
 
@@ -123,18 +122,13 @@ async def handle_gif_document(message: types.Message):
 
     if success and os.path.exists(output_path):
         output_size_mb = os.path.getsize(output_path) / (1024 * 1024)
-        if output_size_mb <= 10:
-            gif_file = FSInputFile(output_path, filename="wide_animation.gif")
-            await message.answer_animation(gif_file, caption="Готово! Широкоформатный GIF")
-            await processing.delete()
-        else:
-            await processing.edit_text(f"Обработанный GIF слишком большой ({output_size_mb:.1f} МБ). Отправляю исходный.")
-            original = FSInputFile(input_path, filename="animation.gif")
-            await message.answer_animation(original)
+        gif_file = FSInputFile(output_path, filename="wide_animation.gif")
+        await message.answer_document(gif_file, caption=f"✅ Широкоформатный GIF\nРазмер: {output_size_mb:.1f} МБ\nКадров: {frames}\nFPS: ~{TARGET_FPS}")
+        await processing.delete()
     else:
-        await processing.edit_text("Обработка не удалась. Отправляю исходный GIF.")
-        original = FSInputFile(input_path, filename="animation.gif")
-        await message.answer_animation(original)
+        await processing.edit_text("❌ Обработка не удалась. Отправляю исходный GIF.")
+        original = FSInputFile(input_path, filename="original.gif")
+        await message.answer_document(original, caption="Исходный GIF")
 
     for f in (input_path, output_path):
         if os.path.exists(f):
@@ -148,13 +142,13 @@ async def handle_animation(message: types.Message):
     await bot.download_file(file.file_path, input_path)
 
     await message.answer("Анимации в формате MP4 не обрабатываются. Отправляю исходную.")
-    original = FSInputFile(input_path, filename="animation.mp4")
-    await message.answer_animation(original)
+    original = FSInputFile(input_path, filename="original.mp4")
+    await message.answer_document(original, caption="Исходная анимация (MP4)")
     os.remove(input_path)
 
 @dp.message()
 async def unknown(message: types.Message):
-    await message.answer("Отправь GIF-файл.")
+    await message.answer("❌ Отправь GIF-файл.")
 
 async def main():
     print(f"🚀 Бот запущен. Версия: {BOT_VERSION}")
