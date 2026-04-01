@@ -1,8 +1,7 @@
 import asyncio
 import os
-import shutil
-import tempfile
 import subprocess
+import tempfile
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile
@@ -13,16 +12,14 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 TEMP_DIR = tempfile.mkdtemp()
-OUTPUT_DIR = os.path.join(TEMP_DIR, "output")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Качество видео
+# Настройки видео (как в прошлом коде)
 OUTPUT_WIDTH = 640
 OUTPUT_HEIGHT = 640
 FPS = 30
 
-async def convert_webm_to_video(input_path: str, output_path: str) -> bool:
-    """Конвертирует WEBM в MP4"""
+async def convert_gif_to_video(input_path: str, output_path: str) -> bool:
+    """Конвертирует GIF в MP4 с помощью ffmpeg"""
     try:
         cmd = [
             "ffmpeg", "-y",
@@ -41,128 +38,72 @@ async def convert_webm_to_video(input_path: str, output_path: str) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        await process.communicate()
-        return process.returncode == 0
-    except:
-        return False
-
-async def convert_tgs_to_video(input_path: str, output_path: str) -> bool:
-    """Конвертирует TGS (Lottie) в MP4"""
-    try:
-        import rlottie_python
-        import imageio
-        import numpy as np
-        from PIL import Image
-
-        # Загружаем анимацию
-        with open(input_path, "rb") as f:
-            data = f.read()
-        animation = rlottie_python.LottieAnimation.from_data(data)
-        duration = animation.duration() / 1000.0  # миллисекунды -> секунды
-        fps = 30
-        total_frames = int(duration * fps)
-
-        frames = []
-        for i in range(total_frames):
-            frame = animation.render(i / fps)
-            img = Image.fromarray(frame, "RGBA")
-            frames.append(np.array(img))
-
-        # Сохраняем как временный GIF
-        gif_path = output_path.replace(".mp4", ".gif")
-        imageio.mimsave(gif_path, frames, fps=fps, loop=0)
-
-        # Конвертируем GIF в MP4
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", gif_path,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-vf", f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2",
-            "-r", str(FPS),
-            "-movflags", "+faststart",
-            output_path
-        ]
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await process.communicate()
-        os.remove(gif_path)
+        _, stderr = await process.communicate()
+        if process.returncode != 0:
+            print("FFmpeg error:", stderr.decode())
         return process.returncode == 0
     except Exception as e:
-        print("TGS error:", e)
+        print("Conversion error:", e)
         return False
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("Пришли мне премиум-эмодзи или анимированный стикер — я сделаю из него видео!")
+    await message.answer("Пришли мне GIF — я сделаю из него видео MP4!")
+
+@dp.message(lambda msg: msg.document and msg.document.mime_type == "image/gif")
+async def handle_gif_document(message: types.Message):
+    # Получаем GIF как документ
+    file_id = message.document.file_id
+    file = await bot.get_file(file_id)
+    input_path = os.path.join(TEMP_DIR, f"{file_id}.gif")
+    output_path = os.path.join(TEMP_DIR, f"{file_id}.mp4")
+
+    # Скачиваем
+    await bot.download_file(file.file_path, input_path)
+
+    processing = await message.answer("Конвертирую GIF в видео...")
+    success = await convert_gif_to_video(input_path, output_path)
+
+    if success:
+        video = FSInputFile(output_path)
+        await message.answer_video(video, caption="Готово!")
+    else:
+        await message.answer("Не удалось сконвертировать GIF. Убедитесь, что файл корректен.")
+
+    await processing.delete()
+    # Удаляем временные файлы
+    os.remove(input_path)
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+@dp.message(lambda msg: msg.animation)
+async def handle_animation(message: types.Message):
+    # Если прислали анимацию (GIF в Telegram)
+    file_id = message.animation.file_id
+    file = await bot.get_file(file_id)
+    input_path = os.path.join(TEMP_DIR, f"{file_id}.mp4")  # Telegram хранит анимацию как MP4
+    output_path = os.path.join(TEMP_DIR, f"{file_id}_out.mp4")
+
+    await bot.download_file(file.file_path, input_path)
+
+    processing = await message.answer("Конвертирую анимацию в видео...")
+    # Анимация уже MP4, просто перекодируем под нужный размер
+    success = await convert_gif_to_video(input_path, output_path)
+
+    if success:
+        video = FSInputFile(output_path)
+        await message.answer_video(video, caption="Готово!")
+    else:
+        await message.answer("Не удалось сконвертировать анимацию.")
+
+    await processing.delete()
+    os.remove(input_path)
+    if os.path.exists(output_path):
+        os.remove(output_path)
 
 @dp.message()
-async def handle_media(message: types.Message):
-    # Проверяем, есть ли анимированный стикер
-    if message.sticker and (message.sticker.is_animated or message.sticker.is_video):
-        sticker = message.sticker
-        ext = ".webm" if sticker.is_video else ".tgs"
-        input_path = os.path.join(TEMP_DIR, f"{sticker.file_unique_id}{ext}")
-        output_path = os.path.join(OUTPUT_DIR, f"{sticker.file_unique_id}.mp4")
-
-        file = await bot.get_file(sticker.file_id)
-        await bot.download_file(file.file_path, input_path)
-
-        processing = await message.answer("Конвертирую...")
-        if sticker.is_video:
-            success = await convert_webm_to_video(input_path, output_path)
-        else:
-            success = await convert_tgs_to_video(input_path, output_path)
-
-        if success:
-            video = FSInputFile(output_path)
-            await message.answer_video(video, caption="Готово!")
-        else:
-            await message.answer("Не удалось сконвертировать стикер.")
-
-        await processing.delete()
-        os.remove(input_path)
-        os.remove(output_path)
-        return
-
-    # Проверяем, есть ли кастомный эмодзи в тексте
-    if message.entities:
-        custom_emoji = [e for e in message.entities if e.type == "custom_emoji"]
-        if custom_emoji:
-            emoji_id = custom_emoji[0].custom_emoji_id
-            stickers = await bot.get_custom_emoji_stickers([emoji_id])
-            if stickers:
-                sticker = stickers[0]
-                ext = ".webm" if sticker.is_video else ".tgs"
-                input_path = os.path.join(TEMP_DIR, f"{emoji_id}{ext}")
-                output_path = os.path.join(OUTPUT_DIR, f"{emoji_id}.mp4")
-
-                file = await bot.get_file(sticker.file_id)
-                await bot.download_file(file.file_path, input_path)
-
-                processing = await message.answer("Конвертирую эмодзи...")
-                if sticker.is_video:
-                    success = await convert_webm_to_video(input_path, output_path)
-                else:
-                    success = await convert_tgs_to_video(input_path, output_path)
-
-                if success:
-                    video = FSInputFile(output_path)
-                    await message.answer_video(video, caption="Готово!")
-                else:
-                    await message.answer("Не удалось сконвертировать эмодзи.")
-
-                await processing.delete()
-                os.remove(input_path)
-                os.remove(output_path)
-                return
-
-    await message.answer("Пожалуйста, отправьте премиум-эмодзи или анимированный стикер (WEBM/TGS).")
+async def unknown(message: types.Message):
+    await message.answer("Отправьте GIF файл или анимацию (через документ или как GIF в Telegram).")
 
 async def main():
     await dp.start_polling(bot)
