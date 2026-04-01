@@ -13,13 +13,13 @@ BOT_TOKEN = "8546598726:AAG2SfBlXi96vtXBGPEQeGNhpXZvyQ-eZj4"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-BOT_VERSION = "v3.0"
-BOT_UPDATE_TEXT = "✅ Обновление: оптимизация под Telegram — уменьшение FPS и размера для корректной отправки как анимации."
+BOT_VERSION = "v4.0"
+BOT_UPDATE_TEXT = "✅ Обновление: новая запись GIF через Pillow (совместимость с Telegram) + ограничение кадров до 100 для надёжности."
 
 TEMP_DIR = tempfile.mkdtemp()
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 816
-MAX_FRAMES = 150
+MAX_FRAMES = 100
 MAX_SIZE_MB = 5
 TIMEOUT = 40
 TARGET_FPS = 20
@@ -37,11 +37,11 @@ def get_gif_info(input_path):
 def resize_gif(input_path: str, output_path: str) -> bool:
     try:
         reader = imageio.get_reader(input_path, format='gif')
-        frames = []
         fps_original = reader.get_meta_data().get('fps', 15)
-        # Уменьшаем FPS, если он слишком высокий
         fps = min(fps_original, TARGET_FPS)
         step = max(1, int(fps_original / fps))
+        
+        frames = []
         for i, frame in enumerate(reader):
             if i % step != 0:
                 continue
@@ -53,16 +53,22 @@ def resize_gif(input_path: str, output_path: str) -> bool:
             x = (OUTPUT_WIDTH - img.width) // 2
             y = (OUTPUT_HEIGHT - img.height) // 2
             new_img.paste(img, (x, y))
-            frames.append(np.array(new_img))
+            frames.append(new_img)
         reader.close()
 
         if not frames:
             return False
 
-        writer = imageio.get_writer(output_path, format='gif', mode='I', fps=fps)
-        for frame in frames:
-            writer.append_data(frame)
-        writer.close()
+        # Сохраняем через Pillow
+        frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=int(1000 / fps),
+            loop=0,
+            optimize=True,
+            disposal=2
+        )
         return True
     except Exception as e:
         print(f"Resize GIF error: {e}")
@@ -79,7 +85,7 @@ async def run_with_timeout(func, *args, timeout=TIMEOUT):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer(f"🤖 Бот версии {BOT_VERSION}\n\n{BOT_UPDATE_TEXT}\n\nОтправь GIF — я сделаю из него широкоформатный GIF 1920×816 с чёрными полями.\nОбрабатываются GIF до 150 кадров и до 5 МБ. Если больше — верну исходный.")
+    await message.answer(f"🤖 Бот версии {BOT_VERSION}\n\n{BOT_UPDATE_TEXT}\n\nОтправь GIF — я сделаю из него широкоформатный GIF 1920×816 с чёрными полями.\nОбрабатываются GIF до 100 кадров и до 5 МБ. Если больше — верну исходный.")
 
 @dp.message(lambda msg: msg.document and msg.document.mime_type == "image/gif")
 async def handle_gif_document(message: types.Message):
@@ -116,7 +122,6 @@ async def handle_gif_document(message: types.Message):
     success = await run_with_timeout(resize_gif, input_path, output_path, timeout=TIMEOUT)
 
     if success and os.path.exists(output_path):
-        # Проверяем размер обработанного файла
         output_size_mb = os.path.getsize(output_path) / (1024 * 1024)
         if output_size_mb <= 10:
             gif_file = FSInputFile(output_path, filename="wide_animation.gif")
