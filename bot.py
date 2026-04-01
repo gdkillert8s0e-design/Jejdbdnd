@@ -13,8 +13,8 @@ BOT_TOKEN = "8546598726:AAG2SfBlXi96vtXBGPEQeGNhpXZvyQ-eZj4"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-BOT_VERSION = "v2.0"
-BOT_UPDATE_TEXT = "✅ Обновление: полный отказ от ffmpeg, обработка GIF через Python (imageio + Pillow)."
+BOT_VERSION = "v3.0"
+BOT_UPDATE_TEXT = "✅ Обновление: оптимизация под Telegram — уменьшение FPS и размера для корректной отправки как анимации."
 
 TEMP_DIR = tempfile.mkdtemp()
 OUTPUT_WIDTH = 1920
@@ -22,6 +22,7 @@ OUTPUT_HEIGHT = 816
 MAX_FRAMES = 150
 MAX_SIZE_MB = 5
 TIMEOUT = 40
+TARGET_FPS = 20
 
 def get_gif_info(input_path):
     try:
@@ -36,11 +37,15 @@ def get_gif_info(input_path):
 def resize_gif(input_path: str, output_path: str) -> bool:
     try:
         reader = imageio.get_reader(input_path, format='gif')
-        metadata = reader.get_meta_data()
-        fps = metadata.get('fps', 15)
         frames = []
+        fps_original = reader.get_meta_data().get('fps', 15)
+        # Уменьшаем FPS, если он слишком высокий
+        fps = min(fps_original, TARGET_FPS)
+        step = max(1, int(fps_original / fps))
         for i, frame in enumerate(reader):
-            if i >= MAX_FRAMES:
+            if i % step != 0:
+                continue
+            if len(frames) >= MAX_FRAMES:
                 break
             img = Image.fromarray(frame)
             img.thumbnail((OUTPUT_WIDTH, OUTPUT_HEIGHT), Image.LANCZOS)
@@ -50,6 +55,9 @@ def resize_gif(input_path: str, output_path: str) -> bool:
             new_img.paste(img, (x, y))
             frames.append(np.array(new_img))
         reader.close()
+
+        if not frames:
+            return False
 
         writer = imageio.get_writer(output_path, format='gif', mode='I', fps=fps)
         for frame in frames:
@@ -108,9 +116,16 @@ async def handle_gif_document(message: types.Message):
     success = await run_with_timeout(resize_gif, input_path, output_path, timeout=TIMEOUT)
 
     if success and os.path.exists(output_path):
-        gif_file = FSInputFile(output_path, filename="wide_animation.gif")
-        await message.answer_animation(gif_file, caption="Готово! Широкоформатный GIF")
-        await processing.delete()
+        # Проверяем размер обработанного файла
+        output_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+        if output_size_mb <= 10:
+            gif_file = FSInputFile(output_path, filename="wide_animation.gif")
+            await message.answer_animation(gif_file, caption="Готово! Широкоформатный GIF")
+            await processing.delete()
+        else:
+            await processing.edit_text(f"Обработанный GIF слишком большой ({output_size_mb:.1f} МБ). Отправляю исходный.")
+            original = FSInputFile(input_path, filename="animation.gif")
+            await message.answer_animation(original)
     else:
         await processing.edit_text("Обработка не удалась. Отправляю исходный GIF.")
         original = FSInputFile(input_path, filename="animation.gif")
